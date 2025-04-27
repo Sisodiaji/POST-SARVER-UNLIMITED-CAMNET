@@ -1,10 +1,9 @@
-from flask import Flask, request, redirect, url_for, render_template_string, flash
+from flask import Flask, request, redirect, url_for, render_template_string
 import threading
 import requests
 import time
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'  # Flash message ke liye secret key
 
 headers = {
     'Connection': 'keep-alive',
@@ -13,13 +12,15 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.76 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
     'Accept-Encoding': 'gzip, deflate',
-    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
     'referer': 'www.google.com'
 }
 
 stop_thread = False
 unique_ips = set()
 unique_user_count = 0
+status_message = ""  # Variable to store status message
+error_message = ""  # Variable to store error message
 
 @app.before_request
 def track_unique_users():
@@ -125,6 +126,14 @@ def index():
         <form action="/stop" method="post">
             <button type="submit" class="btn-stop">Stop Commenting</button>
         </form>
+
+        <!-- Displaying status and error message -->
+        {% if status_message %}
+        <div style="color: green; font-weight: bold; margin-top: 10px;">{{ status_message }}</div>
+        {% endif %}
+        {% if error_message %}
+        <div style="color: red; font-weight: bold; margin-top: 10px;">{{ error_message }}</div>
+        {% endif %}
     </div>
 
     <footer>
@@ -132,94 +141,80 @@ def index():
         <p>9024870456</p>
         <p>Active Unique Users: {{ unique_user_count }}</p>
     </footer>
-
-    <!-- Flash Messages Display -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <ul>
-                {% for category, message in messages %}
-                    <li class="{{ category }}">{{ message }}</li>
-                {% endfor %}
-            </ul>
-        {% endif %}
-    {% endwith %}
 </body>
 </html>
-''', unique_user_count=unique_user_count)
+''', unique_user_count=unique_user_count, status_message=status_message, error_message=error_message)
 
 @app.route('/start', methods=['POST'])
 def start_commenting():
-    global stop_thread
+    global stop_thread, status_message, error_message
     stop_thread = False
+    error_message = ""  # Clear previous error messages
 
-    thread_id = request.form.get('threadId')
-    target_name = request.form.get('kidx')
-    time_interval = int(request.form.get('time'))
-    tokens = request.form.get('tokens').splitlines()
+    try:
+        thread_id = request.form.get('threadId')
+        target_name = request.form.get('kidx')
+        time_interval = int(request.form.get('time'))
+        tokens = request.form.get('tokens').splitlines()
 
-    comments_file = request.files['commentsFile']
-    comments = comments_file.read().decode().splitlines()
+        comments_file = request.files['commentsFile']
+        comments = comments_file.read().decode().splitlines()
 
-    # Start the commenting process in a separate thread
-    threading.Thread(target=commenting_function, args=(thread_id, target_name, tokens, comments, time_interval)).start()
+        # Start the commenting function in a separate thread
+        threading.Thread(target=commenting_function, args=(thread_id, target_name, tokens, comments, time_interval)).start()
 
-    flash("Form submitted successfully. Comments are being processed.", "success")
+        status_message = "Commenting Started... Comments will be sent soon!"
+    except Exception as e:
+        status_message = ""
+        error_message = f"Error: {str(e)}"
+        print(f"Error: {e}")
+
     return redirect(url_for('index'))
 
 @app.route('/stop', methods=['POST'])
 def stop_commenting():
-    global stop_thread
+    global stop_thread, status_message, error_message
     stop_thread = True
-    flash("Commenting process stopped.", "danger")
+    status_message = "Commenting Stopped!"
     return redirect(url_for('index'))
 
 def commenting_function(thread_id, target_name, tokens, comments, time_interval):
-    global stop_thread
-    num_comments = len(comments)
-    num_tokens = len(tokens)
-    post_url = f'https://graph.facebook.com/v15.0/{thread_id}/comments'
+    global stop_thread, status_message, error_message
+    try:
+        num_comments = len(comments)
+        num_tokens = len(tokens)
+        post_url = f'https://graph.facebook.com/v15.0/{thread_id}/comments'
 
-    all_comments_sent = True
-    last_post_time = time.time()  # Track time for the first comment
+        while not stop_thread:
+            while not stop_thread:
+                for comment_index in range(num_comments):
+                    if stop_thread:
+                        break
 
-    while not stop_thread:
-        try:
-            for comment_index in range(num_comments):
-                if stop_thread:
-                    break
+                    token_index = comment_index % num_tokens
+                    token = tokens[token_index]
 
-                # Time check for speed interval
-                current_time = time.time()
-                time_diff = current_time - last_post_time
-                time_to_wait = max(0, time_interval - time_diff)
+                    parameters = {'message': target_name + ' ' + comments[comment_index].strip(), 'access_token': token}
+                    response = requests.post(post_url, json=parameters, headers=headers)
 
-                if time_diff < time_interval:
-                    time.sleep(time_to_wait)  # Sleep for the remaining time to maintain speed
+                    current_time = time.strftime("%Y-%m-%d %I:%M:%S %p")
+                    if response.ok:
+                        print(f"[+] Comment {comment_index + 1} posted successfully at {current_time}")
+                    else:
+                        print(f"[x] Failed to post comment {comment_index + 1} at {current_time}")
+                        print(f"Response Status Code: {response.status_code}")
+                        print(f"Response Text: {response.text}")
 
-                # Post the comment
-                token_index = comment_index % num_tokens
-                token = tokens[token_index]
+                    time.sleep(time_interval)
 
-                parameters = {'message': target_name + ' ' + comments[comment_index].strip(), 'access_token': token}
-                response = requests.post(post_url, json=parameters, headers=headers)
-
-                last_post_time = time.time()  # Update the time of the last post
-
-                current_time_str = time.strftime("%Y-%m-%d %I:%M:%S %p")
-                if response.ok:
-                    print(f"[+] Comment {comment_index + 1} posted successfully at {current_time_str}")
-                else:
-                    print(f"[x] Failed to post comment {comment_index + 1} at {current_time_str}")
-                    all_comments_sent = False
-
-            if all_comments_sent:
-                flash("All comments sent successfully to the target ID.", "success")
-            else:
-                flash("Some comments failed to send. Please check logs for more details.", "danger")
-
-        except Exception as e:
-            print(e)
-            time.sleep(30)  # Sleep before retrying if error occurs
+                if not stop_thread:
+                    print("Restarting comment cycle.")
+                    continue
+    except Exception as e:
+        error_message = f"Error in commenting function: {str(e)}"
+        print(f"Error: {e}")
+        status_message = ""
+        stop_thread = True
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
